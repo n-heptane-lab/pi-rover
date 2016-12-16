@@ -1,13 +1,13 @@
 module Main where
 
-import Control.Applicative (pure)
+import Control.Applicative ((<$>), pure)
 import Control.Concurrent (threadDelay)
-import Data.Bits ((.&.), shiftR)
+import Data.Bits ((.&.), complement, shiftR)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import Data.Monoid ((<>))
 import Data.Word  (Word8, Word16)
-import System.RaspberryPi.GPIO (Address, withGPIO, withI2C, writeI2C, readI2C)
+import System.RaspberryPi.GPIO (Address, withGPIO, withI2C, writeI2C, readI2C, writeReadRSI2C)
 
 type Register = Word8
 type Word12 = Word16
@@ -15,13 +15,15 @@ type Word12 = Word16
 writeI2CReg8 :: Address -> Register -> Word8 -> IO ()
 writeI2CReg8 addr reg datum =
   writeI2C addr (B.pack  [reg, datum])
-  
+
+readI2CReg8 :: Address -> Register -> IO Word8
+readI2CReg8 addr reg =
+  B.head <$> writeReadRSI2C addr (B.singleton reg) 1
 
 data Bit
   = High
   | Low
   deriving (Eq, Ord, Read, Show)
-
 
 -- 16-channel, 12-bit PWM Fm+ I2C-bus LED controller
 -- https://cdn-shop.adafruit.com/datasheets/PCA9685.pdf
@@ -151,17 +153,62 @@ setPWM addr channel on off =
      writeI2CReg8 addr ((ledBaseRegister channel) + 2) (fromIntegral (off .&. 0xFF))
      writeI2CReg8 addr ((ledBaseRegister channel) + 3) (fromIntegral (off `shiftR` 8))
 
+setAllPWM
+  :: Address
+  -> Word8
+  -> Word8
+  -> IO ()
+setAllPWM addr on off =
+  do writeI2CReg8 addr allLedOnL  (fromIntegral (on  .&. 0xFF))
+     writeI2CReg8 addr allLedOnH  (fromIntegral (on  `shiftR` 8))
+     writeI2CReg8 addr allLedOffL (fromIntegral (off .&. 0xFF))
+     writeI2CReg8 addr allLedOffH (fromIntegral (off `shiftR` 8))
+
+-- registers
+mode1 = 0x00
+mode2 = 0x00
+allLedOnL = 0xFA
+allLedOnH = 0xFB
+allLedOffL = 0xFC
+allLedOffH = 0xFD
+
+-- bits
+allcall = 0x01
+outdrv  = 0x04
+sleep   = 0x10
+
+
+
+withMotorHat addr f =
+  do setAllPWM addr 0 0
+     writeI2CReg8 addr mode2 outdrv  -- The 16 LEDn outputs are configured with a totem pole structure.
+     writeI2CReg8 addr mode1 allcall -- PCA9685 responds to LED All Call I2C-bus address.
+     threadDelay 5000                -- wait for oscillator
+     m1 <- readI2CReg8 addr mode1    -- get current mode1 value
+     writeI2CReg8 addr mode1 (m1 .&. (complement sleep)) -- set sleep bit to 0, aka normal mode
+     threadDelay 5000                -- wait for oscillator
+     f
+
 main :: IO ()
 main =
   do let addr = 0x60
 --      freq = 1600
-     withGPIO $ withI2C $ do
+     withGPIO $ withI2C $ withMotorHat addr $ do
        threadDelay (2 * 10^6)
        setSpeed addr motor1 4095
+       setSpeed addr motor2 4095
+       setSpeed addr motor3 4095
+       setSpeed addr motor4 4095       
        setMotorMode addr motor1 CW
+       setMotorMode addr motor2 CW
+       setMotorMode addr motor3 CW
+       setMotorMode addr motor4 CW
        threadDelay (2 * 10^6)
        setMotorMode addr motor1 CCW
        threadDelay (2 * 10^6)
        setSpeed addr motor1 0
        setMotorMode addr motor1 Stop
+       setMotorMode addr motor2 Stop
+       setMotorMode addr motor3 Stop
+       setMotorMode addr motor4 Stop       
 
